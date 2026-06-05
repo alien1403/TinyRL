@@ -1,0 +1,29 @@
+name: TinyRL CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v2
+      
+    - name: Build Docker Image
+      run: |
+        docker compose build
+        
+    - name: Check Python Syntax (train.py)
+      run: |
+        docker compose run --rm tinyrl python -m py_compile train.py
+        
+    - name: Check Python Syntax (inference.py)
+      run: |
+        docker compose run --rm tinyrl python -m py_compile inference.py
