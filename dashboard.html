@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>TinyRL Real-Time Dashboard</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background-color: #121212; color: #e0e0e0; margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center; }
+        h1 { margin-top: 0; }
+        .container { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; }
+        .panel { background: #1e1e1e; padding: 20px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); display: flex; flex-direction: column; align-items: center; }
+        canvas { background: #000; border-radius: 4px; }
+        #metrics { display: flex; gap: 20px; margin-bottom: 20px; flex-wrap: wrap; justify-content: center; }
+        .metric-card { background: #2c2c2c; padding: 15px 25px; border-radius: 6px; text-align: center; min-width: 120px; }
+        .metric-value { font-size: 24px; font-weight: bold; color: #4CAF50; }
+        .metric-label { font-size: 12px; color: #aaa; text-transform: uppercase; margin-top: 5px; }
+        .loss-val { color: #f44336; }
+        .mem-val { color: #2196F3; }
+        h3 { margin-top: 0; }
+    </style>
+</head>
+<body>
+    <h1>TinyRL Training Dashboard</h1>
+    
+    <div id="metrics">
+        <div class="metric-card">
+            <div class="metric-value" id="ep-val">0</div>
+            <div class="metric-label">Episode</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value" id="rew-val">0.0</div>
+            <div class="metric-label">Latest Reward</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value loss-val" id="loss-val">0.00</div>
+            <div class="metric-label">Avg Loss</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value mem-val" id="mem-val">0.0</div>
+            <div class="metric-label">Memory (KB)</div>
+        </div>
+        <div class="metric-card">
+            <div class="metric-value" style="color: #FFC107;" id="eps-val">1.00</div>
+            <div class="metric-label">Epsilon</div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="panel">
+            <h3>Live Environment</h3>
+            <canvas id="env-canvas" width="600" height="400"></canvas>
+        </div>
+        <div class="panel">
+            <h3>Reward History</h3>
+            <canvas id="reward-canvas" width="600" height="180"></canvas>
+            <h3 style="margin-top: 20px;">Loss History</h3>
+            <canvas id="loss-canvas" width="600" height="180"></canvas>
+            <h3 style="margin-top: 20px;">Memory Footprint (KB)</h3>
+            <canvas id="memory-canvas" width="600" height="180"></canvas>
+        </div>
+    </div>
+
+    <script>
+        const envCanvas = document.getElementById('env-canvas');
+        const envCtx = envCanvas.getContext('2d');
+        
+        let rewardHistory = [];
+        let lossHistory = [];
+        let memoryHistory = [];
+
+        // Fetch Environment Frame via Raw Bytes
+        async function fetchFrame() {
+            try {
+                const response = await fetch('/frame');
+                if (response.ok) {
+                    const buffer = await response.arrayBuffer();
+                    const view = new Uint8Array(buffer);
+                    
+                    // Cartpole default is 600x400 RGB (3 bytes per pixel)
+                    if (view.length === 600 * 400 * 3) {
+                        const imgData = envCtx.createImageData(600, 400);
+                        let j = 0;
+                        for (let i = 0; i < view.length; i += 3) {
+                            imgData.data[j++] = view[i];     // R
+                            imgData.data[j++] = view[i+1];   // G
+                            imgData.data[j++] = view[i+2];   // B
+                            imgData.data[j++] = 255;         // A
+                        }
+                        envCtx.putImageData(imgData, 0, 0);
+                    }
+                }
+            } catch (e) { }
+            requestAnimationFrame(fetchFrame);
+        }
+
+        // Fetch Metrics via JSON
+        async function fetchMetrics() {
+            try {
+                const response = await fetch('/metrics');
+                if (response.ok) {
+                    const data = await response.json();
+                    
+                    document.getElementById('ep-val').innerText = data.episode;
+                    
+                    if (data.reward !== undefined) document.getElementById('rew-val').innerText = data.reward.toFixed(1);
+                    if (data.epsilon !== undefined) document.getElementById('eps-val').innerText = data.epsilon.toFixed(2);
+                    if (data.loss !== undefined) document.getElementById('loss-val').innerText = data.loss.toFixed(3);
+                    if (data.memory !== undefined) document.getElementById('mem-val').innerText = data.memory.toFixed(1);
+
+                    if (data.history_reward && data.history_reward.length > 0) {
+                        rewardHistory = data.history_reward;
+                        drawPlot('reward-canvas', rewardHistory, '#4CAF50');
+                    }
+                    if (data.history_loss && data.history_loss.length > 0) {
+                        lossHistory = data.history_loss;
+                        drawPlot('loss-canvas', lossHistory, '#f44336');
+                    }
+                    if (data.history_memory && data.history_memory.length > 0) {
+                        memoryHistory = data.history_memory;
+                        drawPlot('memory-canvas', memoryHistory, '#2196F3', true);
+                    }
+                    
+                    // Handle old inference.py format backward compatibility
+                    if (data.history && data.history.length > 0) {
+                        rewardHistory = data.history;
+                        drawPlot('reward-canvas', rewardHistory, '#4CAF50');
+                    }
+                }
+            } catch (e) { }
+            setTimeout(fetchMetrics, 500); // update every 500ms
+        }
+
+        function drawPlot(canvasId, dataArray, color, startAtZero = false) {
+            const canvas = document.getElementById(canvasId);
+            if (!canvas) return;
+            const ctx = canvas.getContext('2d');
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            if (dataArray.length === 0) return;
+
+            let maxV = Math.max(...dataArray, 0.01);
+            let minV = startAtZero ? 0 : Math.min(...dataArray);
+            
+            if (maxV === minV) {
+                maxV += 1;
+                minV -= 1;
+            }
+
+            const w = canvas.width;
+            const h = canvas.height;
+            const padding = 20;
+
+            // Draw axes
+            ctx.strokeStyle = '#555';
+            ctx.beginPath();
+            ctx.moveTo(padding, padding);
+            ctx.lineTo(padding, h - padding);
+            ctx.lineTo(w - padding, h - padding);
+            ctx.stroke();
+
+            // Draw line
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            
+            const stepX = (w - 2 * padding) / Math.max(dataArray.length - 1, 1);
+            const rangeY = maxV - minV;
+            
+            dataArray.forEach((v, i) => {
+                const x = padding + i * stepX;
+                const y = (h - padding) - (((v - minV) / rangeY) * (h - 2 * padding));
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.stroke();
+        }
+
+        fetchFrame();
+        fetchMetrics();
+    </script>
+</body>
+</html>
